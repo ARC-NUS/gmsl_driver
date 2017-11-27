@@ -92,9 +92,7 @@ Camera::Camera(dwSensorHandle_t &sensor, dwSensorParams salParams, dwSALHandle_t
 
 
 /*
-
 Initialize RGBA Image Pool for each Camera Port
-
 */
 void Camera::initImagePool(dwContextHandle_t sdk)
 {
@@ -111,7 +109,7 @@ void Camera::initImagePool(dwContextHandle_t sdk)
                 NvMediaImage *rgbaNvMediaImage;
 
 
-                rgbaNvMediaImage = NvMediaImageCreate(nvmedia, NvMediaSurfaceType_Image_RGBA,
+                rgbaNvMediaImage = NvMediaImageCreate(nvmedia, NvMediaSurfaceType_Image_YUV_420,
                                                       NVMEDIA_IMAGE_CLASS_SINGLE_IMAGE, 1,
                                                       width, height,
                                                       0,
@@ -232,6 +230,3 @@ void Camera::stop_camera()
 
 
 Camera::~Camera() {}
-	
-
-

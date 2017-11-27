@@ -14,11 +14,26 @@ find_package(CUDA REQUIRED)
 find_package(Threads REQUIRED)
 find_package(GLEW REQUIRED)
 find_package(Driveworks REQUIRED)
-find_package(OpenCV REQUIRED )
+find_package(OpenCV REQUIRED)
+#  NO_DEFAULT_PATH)
+#NO_CMAKE_ENVIRONMENT_PATH
+#NO_CMAKE_PATH
+#NO_SYSTEM_ENVIRONMENT_PATH)
+#find_package(PkgConfig REQUIRED)
+#pkg_search_module(glfw required glfw3)
+
 
 # SET THESE VARIABLES TO YOUR DRIVEWORKS LOCATIONS
-set(Driveworks_INCLUDE_DIR /usr/local/driveworks/include/)
-set(Driveworks_LIBRARY /usr/local/driveworks/lib/)
+set(Driveworks_INCLUDE_DIR /usr/local/driveworks-0.3/include/)
+set(Driveworks_LIBRARY /usr/local/driveworks-0.3/lib/)
+
+
+# set flags for CUDA nvcc
+set(CUDA_NVCC_FLAGS "${CUDA_NVCC_FLAGS} -DMY_DEF=1") 
+set( CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -DMY_DEF=1" )
+set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -DMY_DEF=1" ) 
+set(LIB_TYPE STATIC)
+CUDA_ADD_LIBRARY(Uploadlib ${LIB_TYPE} src/upload.cu)
 
 find_package(catkin REQUIRED COMPONENTS
   roscpp
@@ -45,13 +60,23 @@ include_directories(
 )
 
 # TODO: add a FindNvmedia.cmake file for this? Why does it not exist?
-include_directories(/usr/share/visionworks/sources/3rdparty/nvmedia/
-/usr/share/visionworks/VisionWorks-1.6-Samples/3rdparty/glfw3/include/
+include_directories(
+ /usr/share/visionworks/sources/3rdparty/nvmedia/
+ /usr/share/visionworks/VisionWorks-1.6-Samples/3rdparty/glfw3/include/
+ /usr/local/driveworks/samples/3rdparty/linux-aarch64/glfw-3.1.1/include
 )
 
 
 # ros node name template
 set(NODE_NAME ${PROJECT_NAME}_node)
+
+#CUDA compile
+cuda_compile(MAIN_O src/main.cu)
+#cuda_add_executable(${NODE_NAME} src/main.cu)
+#target_link_libraries( ${catkin_LIBRARIES} ) 
+#add_dependencies(${NODE_NAME} ${PROJECT_NAME}_generate_messages_cpp ${LINE_PROFILER_CU_O} )
+
+
 
 add_executable(${NODE_NAME} src/main.cpp
   src/ProgramArguments.cpp
@@ -64,6 +89,8 @@ add_executable(${NODE_NAME} src/main.cpp
   src/Camera.cpp
 )
 
+add_dependencies(${NODE_NAME} Uploadlib)
+
 target_link_libraries(${NODE_NAME}
   ${catkin_LIBRARIES}
   nvmedia  
@@ -72,7 +99,9 @@ target_link_libraries(${NODE_NAME}
   GLESv2
   EGL
   drm
-  #glfw3
+#  glfw3
   ${CUDA_LIBRARY}
-  ${OpenCV_LIBS} 
+#  ${OpenCV_LIBS}
+  opencv_cudaimgproc
+  Uploadlib
 )

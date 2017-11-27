@@ -6,6 +6,9 @@
 #include <image_transport/image_transport.h>
 #include <string>
 
+//to create image message in main
+#include <sensor_msgs/Image.h>
+#include <sensor_msgs/image_encodings.h>
 
 class OpenCVConnector {
 
@@ -13,7 +16,10 @@ public:
    OpenCVConnector(std::string topic_name);
 
    void WriteToOpenCV(unsigned char*, int, int);
-
+   // void WriteToOpenCV(cudaArray_t*, int, int);
+   // void WriteToOpenCV(sensor_msgs::ImagePtr, int, int);
+   void WriteToOpenCV(sensor_msgs::ImagePtr*, int, int);
+   image_transport::Publisher * getPublisher();
 
    ros::NodeHandle nh;
    image_transport::ImageTransport it;
@@ -21,10 +27,7 @@ public:
    std::string topic_name;
 
    unsigned int counter;
-
 };
-
-
 
 #endif
 

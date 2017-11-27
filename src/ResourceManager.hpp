@@ -53,8 +53,8 @@
 class ResourceManager
 {
   private:
-    dwContextHandle_t m_SDKHandle;
-    dwRendererHandle_t m_rendererHandle;
+    dwContextHandle_t m_SDKHandle; // --YLC-- file:///usr/local/driveworks/doc/nvdwx_html/group__core__group.html#gae81934046206143539721bbe30b08a1e pointer of dwContextObject???
+    dwRendererHandle_t m_rendererHandle; 
     dwSALHandle_t m_salHandle;
     
   protected:
