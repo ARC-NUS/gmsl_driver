@@ -412,83 +412,82 @@ void runNvMedia_pipeline(WindowBase *window, dwRendererHandle_t renderer, dwCont
 						dwImageNvMedia *rgbaImage = camera.rgbaImagePool.back();
 						camera.rgbaImagePool.pop_back();
 
-							rgbaImage = frame;
-							
-								status = dwImageStreamer_postNvMedia(rgbaImage, nvm2CUDA);
+						rgbaImage = frame;
+
+						status = dwImageStreamer_postNvMedia(rgbaImage, nvm2CUDA);
+						if (status != DW_SUCCESS) 
+						{
+							std::cerr << "\n ERROR postNvMedia: " << dwGetStatusName(status) << std::endl;
+						} 
+						{
+							dwImageCUDA * d_frame = nullptr;
+
+							status = dwImageStreamer_receiveCUDA(&d_frame, 10000, nvm2CUDA);
+							if (status == DW_SUCCESS && d_frame) 
+							{
+
+								// ---- convert yuv420 to rgb ---- //
+								dwImageCUDA d_rgb;
+								void *dptr   = nullptr;
+								size_t pitch;
+								cudaMallocPitch(&dptr, &pitch, d_frame->prop.width * 4, d_frame->prop.height);
+								pitch = 5760;
+								status = dwImageCUDA_setFromPitch(&d_rgb, dptr, d_frame->prop.width, d_frame->prop.height, pitch, DW_IMAGE_RGB);
+								d_rgb.prop.pxlType = DW_TYPE_UINT8;
+								// std::cerr << "dw image pxl type: " << d_rgb.prop.pxlType << " vs " << d_frame->prop.pxlType << std::endl;
+								// std::cerr << "dw cuda img pitch: " << d_rgb.pitch[0] << " vs " << d_frame->pitch[0] << std::endl;
 								if (status != DW_SUCCESS) 
 								{
-									std::cerr << "\n ERROR postNvMedia: " << dwGetStatusName(status) << std::endl;
+									std::cerr << "error creating dw cuda img from pitch: " << dwGetStatusName(status) << std::endl;
 								} 
-								else 
+
+								status = dwImageFormatConverter_copyConvertCUDA(&d_rgb, d_frame, yuv2rgb, 0);
+								if (status != DW_SUCCESS) 
 								{
-									dwImageCUDA * d_frame = nullptr;
-								
-									status = dwImageStreamer_receiveCUDA(&d_frame, 10000, nvm2CUDA);
-									if (status == DW_SUCCESS && d_frame) 
-									{
-
-										// ---- convert yuv420 to rgb ---- //
-										dwImageCUDA d_rgb;
-										void *dptr   = nullptr;
-										size_t pitch;
-										cudaMallocPitch(&dptr, &pitch, d_frame->prop.width * 4, d_frame->prop.height);
-										pitch = 5760;
-										status = dwImageCUDA_setFromPitch(&d_rgb, dptr, d_frame->prop.width, d_frame->prop.height, pitch, DW_IMAGE_RGB);
-										d_rgb.prop.pxlType = DW_TYPE_UINT8;
-										// std::cerr << "dw image pxl type: " << d_rgb.prop.pxlType << " vs " << d_frame->prop.pxlType << std::endl;
-										// std::cerr << "dw cuda img pitch: " << d_rgb.pitch[0] << " vs " << d_frame->pitch[0] << std::endl;
-										if (status != DW_SUCCESS) 
-										{
-											std::cerr << "error creating dw cuda img from pitch: " << dwGetStatusName(status) << std::endl;
-										} 
-
-										status = dwImageFormatConverter_copyConvertCUDA(&d_rgb, d_frame, yuv2rgb, 0);
-										if (status != DW_SUCCESS) 
-										{
-											std::cerr << "error converting cuda format: " << dwGetStatusName(status) << std::endl;
-										} 
+									std::cerr << "error converting cuda format: " << dwGetStatusName(status) << std::endl;
+								} 
 
 
-										sensor_msgs::Image img_msg;
-										std_msgs::Header header; // empty header
-										header.stamp = ros::Time::now(); // time
-										img_msg.header = header;
-										int height =  d_frame->prop.height;
-										int width = d_frame->prop.width;
-										img_msg.height = height;
-										img_msg.width = width;
-										img_msg.encoding = "rgb8";
-										int numChannels = 3;
-										int step = width * numChannels * sizeof(uint8_t); //  image.cols * number_of_channels * sizeof(datatype_used)
-										img_msg.step = step;
-										size_t size = step * height;
-										img_msg.data.resize(width*height*numChannels);
-										cudaCopy(&img_msg.data[0],(uint8_t*) d_rgb.dptr[0], width*height*numChannels*sizeof(uint8_t));
+								sensor_msgs::Image img_msg;
+								std_msgs::Header header; // empty header
+								header.stamp = ros::Time::now(); // time
+								img_msg.header = header;
+								int height =  d_frame->prop.height;
+								int width = d_frame->prop.width;
+								img_msg.height = height;
+								img_msg.width = width;
+								img_msg.encoding = "rgb8";
+								int numChannels = 3;
+								int step = width * numChannels * sizeof(uint8_t); //  image.cols * number_of_channels * sizeof(datatype_used)
+								img_msg.step = step;
+								size_t size = step * height;
+								img_msg.data.resize(width*height*numChannels);
+								cudaCopy(&img_msg.data[0],(uint8_t*) d_rgb.dptr[0], width*height*numChannels*sizeof(uint8_t));
 
-										cv_connectors[camIdx+numOfCamInPrevPort]->getPublisher()->publish(img_msg);
+								cv_connectors[camIdx+numOfCamInPrevPort]->getPublisher()->publish(img_msg);
 
-										status = dwImageStreamer_returnReceivedCUDA(d_frame, nvm2CUDA);
-										if(status != DW_SUCCESS)
-										{
-											std::cerr << "ERROR cannot return CUDA: " <<  dwGetStatusName(status) << std::endl;
-										}
-
-										cudaFree(d_rgb.dptr[0]);
-									}
-									else
-									{
-										std::cerr << "ERROR cannot receive on CUDA: " <<  dwGetStatusName(status) << std::endl;
-									}
+								status = dwImageStreamer_returnReceivedCUDA(d_frame, nvm2CUDA);
+								if(status != DW_SUCCESS)
+								{
+									std::cerr << "ERROR cannot return CUDA: " <<  dwGetStatusName(status) << std::endl;
 								}
 
-								// any image returned back, we put back into the pool
-								dwImageNvMedia *retimg = nullptr;
-								dwImageStreamer_waitPostedNvMedia(&retimg, 33000, nvm2CUDA);
+								cudaFree(d_rgb.dptr[0]);
+							}
+							else
+							{
+								std::cerr << "ERROR cannot receive on CUDA: " <<  dwGetStatusName(status) << std::endl;
+							}
+						}
 
-								if (retimg)
-									camera.rgbaImagePool.push_back(retimg);
-							
-						
+						// any image returned back, we put back into the pool
+						dwImageNvMedia *retimg = nullptr;
+						dwImageStreamer_waitPostedNvMedia(&retimg, 33000, nvm2CUDA);
+
+						if (retimg)
+							camera.rgbaImagePool.push_back(retimg);
+
+
 						dwSensorCamera_returnFrame(&frameHandle);
 					}
 				}
