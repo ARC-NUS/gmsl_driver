@@ -477,11 +477,8 @@ void runNvMedia_pipeline(WindowBase *window, dwRendererHandle_t renderer, dwCont
 										} 
 
 
-										// ---- send cuda array & img msg to CUDA ---- //
-										//create image msg
-										/**			sensor_msgs::Image img_msg;
-										  std_msgs::Header header; // empty header
-										// header.seq = 0; //counter; // user defined counter
+										sensor_msgs::Image img_msg;
+										std_msgs::Header header; // empty header
 										header.stamp = ros::Time::now(); // time
 										img_msg.header = header;
 										int height =  d_frame->prop.height;
@@ -494,30 +491,9 @@ void runNvMedia_pipeline(WindowBase *window, dwRendererHandle_t renderer, dwCont
 										img_msg.step = step;
 										size_t size = step * height;
 										img_msg.data.resize(width*height*numChannels);
-
 										cudaCopy(&img_msg.data[0],(uint8_t*) d_rgb.dptr[0], width*height*numChannels*sizeof(uint8_t));
-										 **/
-										sensor_msgs::ImagePtr img_msg;
 
-										std_msgs::Header header; // empty header
-                                                                                // header.seq = 0; //counter; // user defined counter
-                                                                                header.stamp = ros::Time::now(); // time
-                                                                                img_msg->header = header;
-                                                                                int height =  d_frame->prop.height;
-                                                                                int width = d_frame->prop.width;
-                                                                                img_msg->height = height;
-                                                                                img_msg->width = width;
-                                                                                img_msg->encoding = "rgb8";
-                                                                                int numChannels = 3;
-                                                                                int step = width * numChannels * sizeof(uint8_t); //  image.cols * number_of_channels * sizeof(datatype_used)
-                                                                                img_msg->step = step;
-                                                                                size_t size = step * height;
-                                                                                img_msg->data.resize(width*height*numChannels);
-
-                                                                                cudaCopy(&img_msg->data[0],(uint8_t*) d_rgb.dptr[0], width*height*numChannels*sizeof(uint8_t));
-
-
-										// cv_connectors[camIdx]->WriteToOpenCV(img_msg, width, height);
+										cv_connectors[camIdx]->getPublisher()->publish(img_msg);
 
 										status = dwImageStreamer_returnReceivedCUDA(d_frame, nvm2CUDA);
 										if(status != DW_SUCCESS)
