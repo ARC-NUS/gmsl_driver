@@ -358,15 +358,13 @@ void runNvMedia_pipeline(WindowBase *window, dwRendererHandle_t renderer, dwCont
 				{
 					std::cerr << " cannot get sensor properties: " << dwGetStatusName(status) << std::endl;
 				}
+				int numOfCamInPrevPort = 0; //store camIdx that have passed in case the first port is not full
 
-				for (int camIdx = i; camIdx < i + camera.numSiblings; camIdx++){
+				for (int camIdx = 0; camIdx < camera.numSiblings; camIdx++){
 
 					dwCameraFrameHandle_t frameHandle;
 					dwImageNvMedia *frame = nullptr;
-					//frame->img->attributes = NVMEDIA_IMAGE_ATTRIBUTE_UNMAPPED;
 					status = dwSensorCamera_readFrame(&frameHandle, camIdx, 1000000, camera.sensor);
-					//Retrieve frames from multiple siblings??
-					//dwStatus status = dwSensorCamera_readFrame(&frameHandle, camera.numSiblings, 1000000, camera.sensor);
 					if (status != DW_SUCCESS) {
 						std::cout << "\n ERROR readFrame: " << dwGetStatusName(status) << std::endl;
 						continue;
@@ -409,36 +407,13 @@ void runNvMedia_pipeline(WindowBase *window, dwRendererHandle_t renderer, dwCont
 						std::cout << "not recording\n";
 					}
 
-
-					// log message
-					//std::cout << frame->timestamp_us;
-					//std::cout << " IMAGE SIZE " << frame->img->width << "x" << frame->img->height;
-					//std::cout << std::endl;
-
 					// Convert from YUV to RGBA
 					if (frame && camera.rgbaImagePool.size() > 0) {
 						dwImageNvMedia *rgbaImage = camera.rgbaImagePool.back();
 						camera.rgbaImagePool.pop_back();
 
-
-						if(false)
-						{
-							// //std::cout << " CONVERSION YUV->RGBA\n";
-							// status = dwImageFormatConverter_copyConvertNvMedia(rgbaImage, frame, camera.converter);
-							// if (status != DW_SUCCESS) {
-							// 	std::cout << "\n ERROR copyConvert: " << dwGetStatusName(status) << std::endl;
-							// 	camera.rgbaImagePool.push_back(rgbaImage);
-
-							// } else 
-						}
-						else
-						{	
 							rgbaImage = frame;
-							// take screenshot if requested
-							if (false)
-							{
-							}else
-							{
+							
 								status = dwImageStreamer_postNvMedia(rgbaImage, nvm2CUDA);
 								if (status != DW_SUCCESS) 
 								{
@@ -447,10 +422,7 @@ void runNvMedia_pipeline(WindowBase *window, dwRendererHandle_t renderer, dwCont
 								else 
 								{
 									dwImageCUDA * d_frame = nullptr;
-									// status = dwImageStreamer_receiveCUDA(&d_frame, 60000, nvm2gl);
-									// std::cerr << "   postNvMedia success " << std::endl;
-
-
+								
 									status = dwImageStreamer_receiveCUDA(&d_frame, 10000, nvm2CUDA);
 									if (status == DW_SUCCESS && d_frame) 
 									{
@@ -493,7 +465,7 @@ void runNvMedia_pipeline(WindowBase *window, dwRendererHandle_t renderer, dwCont
 										img_msg.data.resize(width*height*numChannels);
 										cudaCopy(&img_msg.data[0],(uint8_t*) d_rgb.dptr[0], width*height*numChannels*sizeof(uint8_t));
 
-										cv_connectors[camIdx]->getPublisher()->publish(img_msg);
+										cv_connectors[camIdx+numOfCamInPrevPort]->getPublisher()->publish(img_msg);
 
 										status = dwImageStreamer_returnReceivedCUDA(d_frame, nvm2CUDA);
 										if(status != DW_SUCCESS)
@@ -515,11 +487,12 @@ void runNvMedia_pipeline(WindowBase *window, dwRendererHandle_t renderer, dwCont
 
 								if (retimg)
 									camera.rgbaImagePool.push_back(retimg);
-							}
-						}
+							
+						
 						dwSensorCamera_returnFrame(&frameHandle);
 					}
 				}
+				numOfCamInPrevPort +=camIdx;
 				if (window)
 					window->swapBuffers();
 			}
