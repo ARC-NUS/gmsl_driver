@@ -359,8 +359,8 @@ void runNvMedia_pipeline(WindowBase *window, dwRendererHandle_t renderer, dwCont
 					std::cerr << " cannot get sensor properties: " << dwGetStatusName(status) << std::endl;
 				}
 				int numOfCamInPrevPort = 0; //store camIdx that have passed in case the first port is not full
-
-				for (int camIdx = 0; camIdx < camera.numSiblings; camIdx++){
+				int camIdx = 0;
+				for (camIdx = 0; camIdx < camera.numSiblings; camIdx++){
 
 					dwCameraFrameHandle_t frameHandle;
 					dwImageNvMedia *frame = nullptr;
