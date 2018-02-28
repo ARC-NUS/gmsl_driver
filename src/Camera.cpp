@@ -47,11 +47,11 @@ Camera::Camera(dwSensorHandle_t &sensor, dwSensorParams salParams, dwSALHandle_t
 	this->sensor     = DW_NULL_HANDLE;
 	streamer   = DW_NULL_HANDLE;
 	serializer = DW_NULL_HANDLE;
-	
+
 
 	// Are we recording the camera?
 	this->record = false || record;
-	
+
 	//Initialize sensors
 	dwStatus result = dwSAL_createSensor(&sensor, salParams, sal);
 
@@ -76,13 +76,13 @@ Camera::Camera(dwSensorHandle_t &sensor, dwSensorParams salParams, dwSALHandle_t
 	}
 	else {
 		std::cerr << "Cannot create driver: " << salParams.protocol
-		    << " with params: " << salParams.parameters << std::endl
-		    << "Error: " << dwGetStatusName(result) << std::endl;
+			<< " with params: " << salParams.parameters << std::endl
+			<< "Error: " << dwGetStatusName(result) << std::endl;
 		if (result == DW_INVALID_ARGUMENT) {
-		    std::cerr << "It is possible the given camera is not supported. " << std::endl;
+			std::cerr << "It is possible the given camera is not supported. " << std::endl;
 		}
 	}
-	
+
 	initImagePool(sdk);
 	initFormatter(sdk);
 	if (record)  initSerializer(arguments);
@@ -92,8 +92,8 @@ Camera::Camera(dwSensorHandle_t &sensor, dwSensorParams salParams, dwSALHandle_t
 
 
 /*
-Initialize RGBA Image Pool for each Camera Port
-*/
+   Initialize RGBA Image Pool for each Camera Port
+ */
 void Camera::initImagePool(dwContextHandle_t sdk)
 {
 
@@ -101,27 +101,51 @@ void Camera::initImagePool(dwContextHandle_t sdk)
 	dwContext_getNvMediaDevice(&nvmedia, sdk);
 
 
-        for (int i = 0; i < numSiblings; ++i) {
+	for (int i = 0; i < numSiblings; ++i) {
 
-                NvMediaImageAdvancedConfig advConfig;
-                memset(&advConfig, 0, sizeof(advConfig));
-                dwImageNvMedia *rgbaImage = new dwImageNvMedia();
-                NvMediaImage *rgbaNvMediaImage;
-
-
-                rgbaNvMediaImage = NvMediaImageCreate(nvmedia, NvMediaSurfaceType_Image_YUV_420,
-                                                      NVMEDIA_IMAGE_CLASS_SINGLE_IMAGE, 1,
-                                                      width, height,
-                                                      0,
-                                                      &advConfig);
-                dwImageNvMedia_setFromImage(rgbaImage, rgbaNvMediaImage);
+		/** NvMediaImageAdvancedConfig advConfig;
+		  memset(&advConfig, 0, sizeof(advConfig));
+		  dwImageNvMedia *rgbaImage = new dwImageNvMedia();
+		  NvMediaImage *rgbaNvMediaImage;
 
 
-                rgbaImagePool.push_back(rgbaImage);
-        }
+		  rgbaNvMediaImage = NvMediaImageCreate(nvmedia, NvMediaSurfaceType_Image_YUV_420,
+		  NVMEDIA_IMAGE_CLASS_SINGLE_IMAGE, 1,
+		  width, height,
+		  0,
+		  &advConfig);
+		 **/
+		NVM_SURF_FMT_DEFINE_ATTR(surfFormatAttrs);
+		NVM_SURF_FMT_SET_ATTR_RGBA(surfFormatAttrs, RGBA, UINT, 8, PL);
+		NvMediaSurfaceType type = NvMediaSurfaceFormatGetType(surfFormatAttrs,
+				NVM_SURF_FMT_ATTR_MAX);
+
+		NvMediaSurfAllocAttr surfAllocAttrs[8];
+		uint32_t numSurfAllocAttrs = 0;
+		surfAllocAttrs[0].type = NVM_SURF_ATTR_WIDTH;
+		surfAllocAttrs[0].value = width;
+		surfAllocAttrs[1].type = NVM_SURF_ATTR_HEIGHT;
+		surfAllocAttrs[1].value = height;
+		surfAllocAttrs[2].type = NVM_SURF_ATTR_CPU_ACCESS;
+		surfAllocAttrs[2].value = NVM_SURF_ATTR_CPU_ACCESS_CACHED;
+		surfAllocAttrs[3].type = NVM_SURF_ATTR_ALLOC_TYPE;
+		surfAllocAttrs[3].value = NVM_SURF_ATTR_ALLOC_ISOCHRONOUS;
+		numSurfAllocAttrs = 4;
+
+		dwImageNvMedia *rgbaImage = new dwImageNvMedia();
+		NvMediaImage *rgbaNvMediaImage;
+
+		rgbaNvMediaImage = NvMediaImageCreateNew(nvmedia, type, surfAllocAttrs,
+				numSurfAllocAttrs, 0);
+
+		dwImageNvMedia_setFromImage(rgbaImage, rgbaNvMediaImage);
 
 
-        std::cout << "Image pool created" << std::endl;
+		rgbaImagePool.push_back(rgbaImage);
+	}
+
+
+	std::cout << "Image pool created" << std::endl;
 
 }
 
@@ -132,26 +156,28 @@ void Camera::initImagePool(dwContextHandle_t sdk)
 /* Initialize the image formatter */
 
 void Camera::initFormatter(dwContextHandle_t sdk) {
-
+/**
 	dwImageProperties cameraImageProperties;
-        dwSensorCamera_getImageProperties(&cameraImageProperties, DW_CAMERA_PROCESSED_IMAGE, sensor);
-        dwImageProperties displayImageProperties = cameraImageProperties;
-        displayImageProperties.pxlFormat = DW_IMAGE_RGBA;
-        displayImageProperties.planeCount = 1;
+	dwSensorCamera_getImageProperties(&cameraImageProperties, DW_CAMERA_PROCESSED_IMAGE, sensor);
+	dwImageProperties displayImageProperties = cameraImageProperties;
+	displayImageProperties.pxlFormat = DW_IMAGE_RGBA;
+	displayImageProperties.planeCount = 1;
 
-        dwImageFormatConverterHandle_t yuv2rgba = DW_NULL_HANDLE;
-        dwStatus status                         = dwImageFormatConverter_initialize(&yuv2rgba,
-                                                        &cameraImageProperties,
-                                                        &displayImageProperties,
-                                                        sdk);
-        if (status != DW_SUCCESS) {
-                std::cerr << "Cannot initialize pixel format converter" << std::endl;
-                exit(1);
-        }
-        else {
-                converter = yuv2rgba;
-                std::cout << "Pixel format converter created" << std::endl;
-        }
+	dwImageFormatConverterHandle_t yuv2rgba = DW_NULL_HANDLE;
+	dwStatus status                         = dwImageFormatConverter_initialize(&yuv2rgba,
+			&cameraImageProperties,
+			&displayImageProperties,
+			sdk);
+	if (status != DW_SUCCESS) {
+		std::cerr << "Cannot initialize pixel format converter" << std::endl;
+		exit(1);
+	}
+	else {
+		converter = yuv2rgba;
+		std::cout << "Pixel format converter created" << std::endl;
+	}
+
+**/
 }
 
 /*--------------------------------------------------------------------------*/
@@ -159,33 +185,33 @@ void Camera::initFormatter(dwContextHandle_t sdk) {
 
 /* Initialize a data serializer for the camera */
 void Camera::initSerializer(ProgramArguments arguments) {
-	
-        dwSerializerParams serializerParams;
-        serializerParams.parameters = "";
-        if (record) {
-                std::string newParams = "";
-                if (arguments.has("serialize-type")) {
-                        newParams +=
-                        std::string("format=") + std::string(arguments.get("serialize-type"));
-                }
-                if (arguments.has("serialize-bitrate")) {
-                        newParams +=
-                        std::string(",bitrate=") + std::string(arguments.get("serialize-bitrate"));
-                }
-                if (arguments.has("serialize-framerate")) {
-                        newParams +=
-                        std::string(",framerate=") + std::string(arguments.get("serialize-framerate"));
-                }
-                newParams += std::string(",type=disk,file=") + std::string(arguments.get("write-file"));
 
-                serializerParams.parameters = newParams.c_str();
-                serializerParams.onData     = nullptr;
+	dwSerializerParams serializerParams;
+	serializerParams.parameters = "";
+	if (record) {
+		std::string newParams = "";
+		if (arguments.has("serialize-type")) {
+			newParams +=
+				std::string("format=") + std::string(arguments.get("serialize-type"));
+		}
+		if (arguments.has("serialize-bitrate")) {
+			newParams +=
+				std::string(",bitrate=") + std::string(arguments.get("serialize-bitrate"));
+		}
+		if (arguments.has("serialize-framerate")) {
+			newParams +=
+				std::string(",framerate=") + std::string(arguments.get("serialize-framerate"));
+		}
+		newParams += std::string(",type=disk,file=") + std::string(arguments.get("write-file"));
 
-                dwSensorSerializer_initialize(&serializer, &serializerParams, sensor);
-              }
-        //! [nv_docs_popoulate_params_and_call_initializer]
+		serializerParams.parameters = newParams.c_str();
+		serializerParams.onData     = nullptr;
 
-       std::cout << "Serializer created" << std::endl;
+		dwSensorSerializer_initialize(&serializer, &serializerParams, sensor);
+	}
+	//! [nv_docs_popoulate_params_and_call_initializer]
+
+	std::cout << "Serializer created" << std::endl;
 }
 
 /*--------------------------------------------------------------------------*/

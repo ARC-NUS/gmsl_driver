@@ -19,11 +19,12 @@ public:
    // void WriteToOpenCV(cudaArray_t*, int, int);
    // void WriteToOpenCV(sensor_msgs::ImagePtr, int, int);
    void WriteToOpenCV(sensor_msgs::ImagePtr*, int, int);
-   image_transport::Publisher * getPublisher();
-
+   ros::Publisher * getPublisher();
+   void Cuda2Gpumat(unsigned char* src, int width, int height);
    ros::NodeHandle nh;
-   image_transport::ImageTransport it;
-   image_transport::Publisher pub;
+//   image_transport::ImageTransport it;
+//   image_transport::Publisher pub;
+   ros::Publisher pub;
    std::string topic_name;
 
    unsigned int counter;

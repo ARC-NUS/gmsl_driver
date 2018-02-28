@@ -10,9 +10,10 @@
 #include <sensor_msgs/Image.h>
 #include <sensor_msgs/image_encodings.h>
 //#include "upload.h"
-
-OpenCVConnector::OpenCVConnector(std::string topic_name) : it(nh), counter(0)	{
-	pub = it.advertise(topic_name, 1);
+#include <opencv2/core/cuda.hpp>
+#include <opencv2/cudaimgproc.hpp>
+OpenCVConnector::OpenCVConnector(std::string topic_name) : counter(0)	{
+    pub = nh.advertise<sensor_msgs::CompressedImage>(topic_name + "/compressed", 1);
 }
 
 
@@ -58,9 +59,21 @@ void OpenCVConnector::WriteToOpenCV(sensor_msgs::ImagePtr * img_msg, int width, 
 }
 
 
-image_transport::Publisher * OpenCVConnector::getPublisher()
+ros::Publisher * OpenCVConnector::getPublisher()
 {
 	return &pub;
 }
 
-
+void OpenCVConnector::Cuda2Gpumat(unsigned char* src, int width, int height)
+{	
+	cv::cuda::GpuMat d_test(cv::Size(width, height), CV_8UC3, src);
+	cv::cuda::GpuMat d_dst;
+	cv::cuda::cvtColor(d_test, d_dst, cv::COLOR_RGB2BGR);
+	cv::Mat h_test; // = d_test;
+	d_dst.download(h_test);
+	//std::cout << h_test << std::endl;
+	std::cerr << "in" << std::endl;
+	bool isWritten = cv::imwrite("/home/nvidia/Desktop/test.jpg", h_test);  
+	std::cerr << isWritten << std::endl;
+	return;
+}

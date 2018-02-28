@@ -89,7 +89,11 @@
 #include "Camera.hpp"
 
 #include <sensor_msgs/image_encodings.h>
+#include <sensor_msgs/CompressedImage.h>
 
+#include "libgpujpeg/gpujpeg.h"
+#include <thread>
+#include <chrono>
 
 //------------------------------------------------------------------------------
 // Variables
@@ -107,6 +111,10 @@ NvMediaISCEmbeddedData sensorData;
 ResourceManager gResources;
 uint32_t g_numCameras;
 
+std::mutex cam_res_mutex;
+std::mutex steamer_mutex;
+
+
 //------------------------------------------------------------------------------
 // Method declarations
 //------------------------------------------------------------------------------
@@ -116,6 +124,9 @@ void initSensors(dwSALHandle_t sal, std::vector<Camera> &cameras);
 
 void runNvMedia_pipeline(WindowBase *window, dwRendererHandle_t renderer, dwContextHandle_t sdk,
 		std::vector<Camera> &cameras);
+void _threadEncodeNPublish(int camIdx, Camera* camera, gpujpeg_encoder* encoder, 
+		ros::Publisher * publisher, dwCameraProperties cameraProperties, 
+		dwImageStreamerHandle_t * nvm2CUDA, dwImageFormatConverterHandle_t * yuv2rgb);
 
 void sig_int_handler(int sig);
 void sig_handler(int sig);
@@ -128,9 +139,9 @@ int main(int argc, const char **argv)
 	// Program arguments
 	ProgramArguments arguments(
 			{
-			ProgramArguments::Option_t("type-ab", "ar0231-rccb"),
-			ProgramArguments::Option_t("type-cd", "ar0231-rccb"),
-			ProgramArguments::Option_t("type-ef", "ar0231-rccb"),
+			ProgramArguments::Option_t("type-ab", "ar0231-rccb-ss3322"),
+			ProgramArguments::Option_t("type-cd", "ar0231-rccb-ss3322"),
+			ProgramArguments::Option_t("type-ef", "ar0231-rccb-ss3322"),
 			ProgramArguments::Option_t("selector-mask", "0001"),
 			ProgramArguments::Option_t("csi-port", "ab"),
 			ProgramArguments::Option_t("cross-csi-sync", "0"),
@@ -160,8 +171,6 @@ int main(int argc, const char **argv)
 
 	//Init
 	g_run = true;
-
-	//initGL(&window);
 
 	// create HAL and camera
 	uint32_t imageWidth;
@@ -209,12 +218,7 @@ int main(int argc, const char **argv)
 void initGL(WindowBase **window)
 {
 	bool offscreen = atoi(gArguments.get("offscreen").c_str()) != 0;
-	//#ifdef VIBRANTE
-	//  if (offscreen)
-	//    *window = new WindowOffscreenEGL(1280, 800);
-	//#else
 	(void)offscreen;
-	//#endif
 
 	if(!gResources.getWindow())
 		gResources.window = new WindowGLFW(1280, 800);
@@ -286,6 +290,19 @@ void runNvMedia_pipeline(WindowBase *window, dwRendererHandle_t renderer, dwCont
 {
 	bool recordCamera = !gArguments.get("write-file").empty();
 
+	// init jpeg encoder
+	struct gpujpeg_parameters param;
+	gpujpeg_set_default_parameters(&param);  // quality:75, restart int:8, interleaved:1
+
+	struct gpujpeg_image_parameters param_image;
+	gpujpeg_image_set_default_parameters(&param_image);
+	param_image.width = 1920;
+	param_image.height = 1208;
+	param_image.comp_count = 3;
+	// (for now, it must be 3)
+	param_image.color_space = GPUJPEG_RGB;
+	param_image.sampling_factor = GPUJPEG_4_4_4;
+	std::vector<gpujpeg_encoder*> encoders;
 	// Start all the cameras 
 	for (auto &camera : cameras) {	
 		g_run &= camera.start();
@@ -294,9 +311,7 @@ void runNvMedia_pipeline(WindowBase *window, dwRendererHandle_t renderer, dwCont
 	int argc = 0; char** argv = nullptr;
 	ros::init(argc, argv, "image_publisher");
 
-
 	std::vector<OpenCVConnector *> cv_connectors;
-
 
 	// Create a topic for each camera attached to each CSI port
 	// Topic naming scheme is port/neighbor_idx/image
@@ -304,6 +319,13 @@ void runNvMedia_pipeline(WindowBase *window, dwRendererHandle_t renderer, dwCont
 		for (int neighbor = 0; neighbor < cameras[i].numSiblings; neighbor++) {
 			const std::string topic = std::string("camera/") + std::to_string(i) + std::string("/") + std::to_string(neighbor) + std::string("/image"); 
 			cv_connectors.push_back(new OpenCVConnector(topic));
+			std::cout << "num of camera: " << neighbor << std::endl;
+			// init jpeg encoder
+			encoders.push_back(gpujpeg_encoder_create(&param,
+						&param_image));
+			if ( encoders.back() == NULL )
+				std::cerr << "cannot create encoder\n";
+
 		}
 	}
 
@@ -339,7 +361,7 @@ void runNvMedia_pipeline(WindowBase *window, dwRendererHandle_t renderer, dwCont
 		dwImageProperties displayImageProperties = cameraImageProperties;
 		displayImageProperties.pxlFormat = DW_IMAGE_RGB;
 		displayImageProperties.planeCount = 1;
-		status = dwImageFormatConverter_initialize(&yuv2rgb, &cameraImageProperties, &displayImageProperties, sdk);
+		status = dwImageFormatConverter_initialize(&yuv2rgb, displayImageProperties.type, sdk);
 		if (status != DW_SUCCESS) 
 		{
 			std::cerr << "\n ERROR Initialising converter: "  << dwGetStatusName(status) << std::endl;
@@ -348,8 +370,11 @@ void runNvMedia_pipeline(WindowBase *window, dwRendererHandle_t renderer, dwCont
 
 		// Message msg;
 		while (g_run && ros::ok()) {
+			int numOfCamPassed = 0;
+
 			for (int i = 0; i < cameras.size(); i++) {
 				Camera camera = cameras[i];
+				std::vector<std::thread> t_vector;
 
 				//Get Camera properties
 				dwCameraProperties cameraProperties;
@@ -358,142 +383,25 @@ void runNvMedia_pipeline(WindowBase *window, dwRendererHandle_t renderer, dwCont
 				{
 					std::cerr << " cannot get sensor properties: " << dwGetStatusName(status) << std::endl;
 				}
-				int numOfCamInPrevPort = 0; //store camIdx that have passed in case the first port is not full
-				int camIdx = 0;
-				for (camIdx = 0; camIdx < camera.numSiblings; camIdx++){
 
-					dwCameraFrameHandle_t frameHandle;
-					dwImageNvMedia *frame = nullptr;
-					status = dwSensorCamera_readFrame(&frameHandle, camIdx, 1000000, camera.sensor);
-					if (status != DW_SUCCESS) {
-						std::cout << "\n ERROR readFrame: " << dwGetStatusName(status) << std::endl;
-						continue;
-					}
-
-					if( cameraProperties.outputTypes & DW_CAMERA_PROCESSED_IMAGE) {
-						status = dwSensorCamera_getImageNvMedia(&frame, DW_CAMERA_PROCESSED_IMAGE, frameHandle);
-						if( status != DW_SUCCESS ) {
-							std::cout << "\n ERROR getImageNvMedia " << dwGetStatusName(status) << std::endl;
-						}
-					}
-
-
-					// get embedded lines
-					if( cameraProperties.outputTypes & DW_CAMERA_DATALINES) {
-						const dwCameraDataLines* dataLines = nullptr;
-						status = dwSensorCamera_getDataLines(&dataLines, frameHandle);
-						// parse the data
-						if( status == DW_SUCCESS ) {
-							status = dwSensorCamera_parseDataNvMedia(&sensorData, dataLines, camera.sensor);
-							if( status == DW_SUCCESS ) {
-								std::cout << "Exposure Time (s): " << sensorData.exposureMidpointTime << "\r";// std::endl;
-							} else {
-								std::cout << "Could not parse embedded data: " << dwGetStatusName(status) << "\r"; //std::endl;
-							}
-						} else {
-							std::cout << "Error getting datalines: " << dwGetStatusName(status) << "\r"; //std::endl;
-						}
-					}
-
-
-					if (frame && recordCamera ) {
-						status = dwSensorSerializer_serializeCameraFrameAsync(frameHandle, camera.serializer);
-						if(status != DW_SUCCESS)
-						{
-							std::cerr << "error serialise sensor: " << dwGetStatusName(status) << std::endl;
-						}
-					}else
-					{
-						std::cout << "not recording\n";
-					}
-
-					// Convert from YUV to RGBA
-					if (frame && camera.rgbaImagePool.size() > 0) {
-						dwImageNvMedia *rgbaImage = camera.rgbaImagePool.back();
-						camera.rgbaImagePool.pop_back();
-
-						rgbaImage = frame;
-
-						status = dwImageStreamer_postNvMedia(rgbaImage, nvm2CUDA);
-						if (status != DW_SUCCESS) 
-						{
-							std::cerr << "\n ERROR postNvMedia: " << dwGetStatusName(status) << std::endl;
-						} 
-						{
-							dwImageCUDA * d_frame = nullptr;
-
-							status = dwImageStreamer_receiveCUDA(&d_frame, 10000, nvm2CUDA);
-							if (status == DW_SUCCESS && d_frame) 
-							{
-
-								// ---- convert yuv420 to rgb ---- //
-								dwImageCUDA d_rgb;
-								void *dptr   = nullptr;
-								size_t pitch;
-								cudaMallocPitch(&dptr, &pitch, d_frame->prop.width * 4, d_frame->prop.height);
-								pitch = 5760;
-								status = dwImageCUDA_setFromPitch(&d_rgb, dptr, d_frame->prop.width, d_frame->prop.height, pitch, DW_IMAGE_RGB);
-								d_rgb.prop.pxlType = DW_TYPE_UINT8;
-								// std::cerr << "dw image pxl type: " << d_rgb.prop.pxlType << " vs " << d_frame->prop.pxlType << std::endl;
-								// std::cerr << "dw cuda img pitch: " << d_rgb.pitch[0] << " vs " << d_frame->pitch[0] << std::endl;
-								if (status != DW_SUCCESS) 
-								{
-									std::cerr << "error creating dw cuda img from pitch: " << dwGetStatusName(status) << std::endl;
-								} 
-
-								status = dwImageFormatConverter_copyConvertCUDA(&d_rgb, d_frame, yuv2rgb, 0);
-								if (status != DW_SUCCESS) 
-								{
-									std::cerr << "error converting cuda format: " << dwGetStatusName(status) << std::endl;
-								} 
-
-
-								sensor_msgs::Image img_msg;
-								std_msgs::Header header; // empty header
-								header.stamp = ros::Time::now(); // time
-								img_msg.header = header;
-								int height =  d_frame->prop.height;
-								int width = d_frame->prop.width;
-								img_msg.height = height;
-								img_msg.width = width;
-								img_msg.encoding = "rgb8";
-								int numChannels = 3;
-								int step = width * numChannels * sizeof(uint8_t); //  image.cols * number_of_channels * sizeof(datatype_used)
-								img_msg.step = step;
-								size_t size = step * height;
-								img_msg.data.resize(width*height*numChannels);
-								cudaCopy(&img_msg.data[0],(uint8_t*) d_rgb.dptr[0], width*height*numChannels*sizeof(uint8_t));
-
-								cv_connectors[camIdx+numOfCamInPrevPort]->getPublisher()->publish(img_msg);
-
-								status = dwImageStreamer_returnReceivedCUDA(d_frame, nvm2CUDA);
-								if(status != DW_SUCCESS)
-								{
-									std::cerr << "ERROR cannot return CUDA: " <<  dwGetStatusName(status) << std::endl;
-								}
-
-								cudaFree(d_rgb.dptr[0]);
-							}
-							else
-							{
-								std::cerr << "ERROR cannot receive on CUDA: " <<  dwGetStatusName(status) << std::endl;
-							}
-						}
-
-						// any image returned back, we put back into the pool
-						dwImageNvMedia *retimg = nullptr;
-						dwImageStreamer_waitPostedNvMedia(&retimg, 33000, nvm2CUDA);
-
-						if (retimg)
-							camera.rgbaImagePool.push_back(retimg);
-
-
-						dwSensorCamera_returnFrame(&frameHandle);
-					}
+				for (int camIdx = 0; camIdx < camera.numSiblings; camIdx++){
+					// call thread and move on to next sibling
+					t_vector.emplace_back(&_threadEncodeNPublish, camIdx, &camera, encoders[numOfCamPassed], 
+							cv_connectors[numOfCamPassed]->getPublisher(), cameraProperties, &nvm2CUDA, &yuv2rgb);
+					numOfCamPassed++;
 				}
-				numOfCamInPrevPort +=camIdx;
-				if (window)
-					window->swapBuffers();
+
+				//destroy threads
+				for (std::thread & t : t_vector) {
+					t.join();
+				}
+				t_vector.clear();
+
+				/**if (window)
+				  {
+				  std::cout << "window!\n";
+				  window->swapBuffers();
+				  } **/
 			}
 
 		}
@@ -504,10 +412,12 @@ void runNvMedia_pipeline(WindowBase *window, dwRendererHandle_t renderer, dwCont
 	for (auto camera : cameras) {
 		camera.stop_camera();
 	}
-
+	while(!encoders.empty())
+	{
+		gpujpeg_encoder_destroy(encoders.back());
+		encoders.pop_back();
+	}
 	dwImageStreamer_release(&nvm2CUDA);
-
-
 }
 
 ////------------------------------------------------------------------------------
@@ -526,4 +436,214 @@ void userKeyPressCallback(int key)
 		gRun = false;
 }
 
+
+////-------------------------------------------------------------------------------
+void _threadEncodeNPublish(int camIdx, Camera* camera, gpujpeg_encoder* encoder, 
+		ros::Publisher * publisher, dwCameraProperties cameraProperties, dwImageStreamerHandle_t * nvm2CUDA,
+		dwImageFormatConverterHandle_t * yuv2rgb)
+{
+	auto start = std::chrono::high_resolution_clock::now();
+
+	bool isOk = true;
+	dwCameraFrameHandle_t frameHandle;
+	dwImageNvMedia *frame = nullptr;
+
+
+	//TODO lock camera, sensorData   
+	cam_res_mutex.lock(); // ---------------------------------------------------------------------locked
+	auto locked = std::chrono::high_resolution_clock::now();
+	// std::cout << "entered mutex on" << camIdx << " lock\n";
+	if(!camera->sensor)
+	{
+		std::cerr << "camera has no sensor\n";
+	}
+
+	dwStatus status = dwSensorCamera_readFrame(&frameHandle, camIdx, 1000000, camera->sensor);
+	if (status != DW_SUCCESS) {
+		std::cout << "\n ERROR readFrame: " << dwGetStatusName(status) << std::endl;
+		// continue;
+		isOk = false;
+	}
+	else
+	{
+
+		if( cameraProperties.outputTypes & DW_CAMERA_PROCESSED_IMAGE) {
+			status = dwSensorCamera_getImageNvMedia(&frame, DW_CAMERA_PROCESSED_IMAGE, frameHandle);
+			if( status != DW_SUCCESS ) {
+				std::cout << "\n ERROR getImageNvMedia " << dwGetStatusName(status) << std::endl;
+			}
+		}
+
+		// get embedded lines
+		if( cameraProperties.outputTypes & DW_CAMERA_DATALINES) {
+			const dwImageDataLines* dataLines = nullptr;
+			status = dwSensorCamera_getDataLines(&dataLines, frameHandle);
+			// parse the data
+			if( status == DW_SUCCESS ) {
+				status = dwSensorCamera_parseDataNvMedia(&sensorData, dataLines, camera->sensor);
+				if( status == DW_SUCCESS ) {
+					std::cout << "Exposure Time (s): " << sensorData.exposureControl.exposureTime << "\r";// std::endl;
+				} else {
+					std::cout << "Could not parse embedded data: " << dwGetStatusName(status) << "\r"; //std::endl;
+				}
+			} else {
+				std::cout << "Error getting datalines: " << dwGetStatusName(status) << "\r"; //std::endl;
+			}
+		}
+
+	}
+	// Convert from YUV to RGBA
+	// bool isOk = false;
+	// dwImageNvMedia *rgbaImage;
+	// if (frame && camera->rgbaImagePool.size() > 0) {
+	// 	rgbaImage = camera->rgbaImagePool.back();
+	// 	camera->rgbaImagePool.pop_back();
+	// 	isOk= true;
+	// }
+	cam_res_mutex.unlock(); //--------------------------------------------------------------------unlocked
+
+	auto unlocked = std::chrono::high_resolution_clock::now();
+
+	// std::cout << "exited mutex on " << camIdx << ": unlocked\n";
+	dwImageNvMedia *rgbaImage;
+
+	if(isOk)
+	{
+		rgbaImage = frame;
+		steamer_mutex.lock(); //------------------------------------------------------------------lock
+		status = dwImageStreamer_postNvMedia(rgbaImage, *nvm2CUDA);
+		if (status != DW_SUCCESS) 
+		{
+			std::cerr << "\n ERROR postNvMedia: " << dwGetStatusName(status) << std::endl;
+		} 
+		else 
+		{
+			dwImageCUDA * d_frame = nullptr;
+			status = dwImageStreamer_receiveCUDA(&d_frame, 10000, *nvm2CUDA);
+
+			if (status == DW_SUCCESS && d_frame) 
+			{
+				// ---- convert yuv420 to rgb ---- //
+				dwImageCUDA d_rgb;
+				void *dptr   = nullptr;
+				size_t pitch;
+				cudaMallocPitch(&dptr, &pitch, d_frame->prop.width * 3, d_frame->prop.height);
+				pitch = d_frame->prop.width * 3; // 5760
+				status = dwImageCUDA_setFromPitch(&d_rgb, dptr, d_frame->prop.width, d_frame->prop.height, pitch, DW_IMAGE_RGB);
+				d_rgb.prop.pxlType = DW_TYPE_UINT8;
+				if (status != DW_SUCCESS) 
+				{
+					std::cerr << "error creating dw cuda img from pitch: " << dwGetStatusName(status) << std::endl;
+				} 
+
+				status = dwImageFormatConverter_copyConvertCUDA(&d_rgb, d_frame, *yuv2rgb, 0);
+				if (status != DW_SUCCESS) 
+				{
+					std::cerr << "error converting cuda format: " << dwGetStatusName(status) << std::endl;
+				} 
+				// TODO record post cv frame for logging here 
+				int height =  d_frame->prop.height;
+				int width = d_frame->prop.width;
+
+				status = dwImageStreamer_returnReceivedCUDA(d_frame, *nvm2CUDA);
+				if(status != DW_SUCCESS)
+				{
+					std::cerr << "ERROR cannot return CUDA: " <<  dwGetStatusName(status) << std::endl;
+				}
+			//	steamer_mutex.unlock(); //---------------------------------------------------------------unlock
+
+				int numChannels = 3;
+				// uint8_t * h_rgb;
+				// h_rgb = (uint8_t*) malloc(width*height*3);
+				auto copy_start = std::chrono::high_resolution_clock::now();
+				// cudaCopy(h_rgb,(uint8_t*) d_rgb.dptr[0], width*height*numChannels*sizeof(uint8_t));
+				auto copy_end = std::chrono::high_resolution_clock::now();
+				struct gpujpeg_encoder_input encoder_input;
+				auto encode_start = std::chrono::high_resolution_clock::now();
+				// gpujpeg_encoder_input_set_image(&encoder_input, (uint8_t*) h_rgb);
+				gpujpeg_encoder_input_set_image(&encoder_input, (uint8_t*) d_rgb.dptr[0]);
+				uint8_t* image_compressed = NULL;
+				int image_compressed_size = 0;
+				if ( gpujpeg_encoder_encode(encoder, &encoder_input, &image_compressed,
+							&image_compressed_size, true) != 0 )
+					std::cerr << "cannot encode image\n";
+				auto encode_end = std::chrono::high_resolution_clock::now();
+				sensor_msgs::CompressedImage c_img_msg;
+				std_msgs::Header header; // empty header
+				header.stamp = ros::Time::now(); // time
+				c_img_msg.header = header;
+				c_img_msg.format = "jpeg";
+				c_img_msg.data.resize(image_compressed_size);
+				auto cpy_to_pub_start = std::chrono::high_resolution_clock::now();
+				memcpy(&c_img_msg.data[0], image_compressed, image_compressed_size);                                
+				auto cpy_to_pub_end = std::chrono::high_resolution_clock::now();
+				// publish to ros
+				publisher->publish(c_img_msg);
+				auto pub_end = std::chrono::high_resolution_clock::now();
+
+				cudaFree(d_rgb.dptr[0]);
+				// free(h_rgb);
+
+				std::cout << "thread cam " << camIdx << " took "
+					<< std::chrono::duration_cast<std::chrono::milliseconds>(pub_end - cpy_to_pub_end).count()
+					<< " milliseconds to copy to publish ros msg\n";
+
+				std::cout << "thread cam " << camIdx << " took "
+					<< std::chrono::duration_cast<std::chrono::milliseconds>(cpy_to_pub_end - cpy_to_pub_start).count()
+					<< " milliseconds to copy to ros msg\n";
+
+				std::cout << "thread cam " << camIdx << " took "
+					<< std::chrono::duration_cast<std::chrono::milliseconds>(copy_end-copy_start).count()
+					<< " milliseconds to copy to CPU memory\n";
+
+				std::cout << "thread cam " << camIdx << " took "
+					<< std::chrono::duration_cast<std::chrono::milliseconds>(encode_end-encode_start).count()
+					<< " milliseconds to encode\n";
+			}
+			else
+			{
+				std::cerr << "ERROR cannot receive on CUDA: " <<  dwGetStatusName(status) << std::endl;
+			//	steamer_mutex.unlock();
+			}
+		}
+
+		// any image returned back, we put back into the pool
+		dwImageNvMedia *retimg = nullptr;
+		auto stream_start = std::chrono::high_resolution_clock::now();
+//		steamer_mutex.lock();
+		dwImageStreamer_waitPostedNvMedia(&retimg, 33000, *nvm2CUDA);
+		steamer_mutex.unlock();
+		auto stream_end = std::chrono::high_resolution_clock::now();
+		std::cout << "thread cam " << camIdx << " took "
+			<< std::chrono::duration_cast<std::chrono::milliseconds>(stream_end-stream_start).count()
+			<< " milliseconds to lock and unlock for retimg\n";
+
+		// if (retimg)
+		// {
+		// 	cam_res_mutex.lock(); 
+		// 	std::cout << "entered second  " << camIdx << " mutex: locked\n";
+		// 	camera->rgbaImagePool.push_back(retimg);
+		// 	cam_res_mutex.unlock(); 
+		// 	std::cout << "exited second " << camIdx << " mutex: unlocked\n";
+		// }
+
+		dwSensorCamera_returnFrame(&frameHandle);
+	}
+	else
+		std::cerr << "No image in rgbaImagePool!\n";
+
+	auto end = std::chrono::high_resolution_clock::now();
+
+	std::cout << "thread cam " << camIdx << " took "
+		<< std::chrono::duration_cast<std::chrono::milliseconds>(end-start).count()
+		<< " milliseconds in total\n";
+
+	std::cout << "thread cam " << camIdx << " took "
+		<< std::chrono::duration_cast<std::chrono::milliseconds>(locked-start).count()
+		<< " milliseconds to lock\n";
+
+	std::cout << "thread cam " << camIdx << " took "
+		<< std::chrono::duration_cast<std::chrono::milliseconds>(unlocked-locked).count()
+		<< " milliseconds to unlock\n";
+}
 

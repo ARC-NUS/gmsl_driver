@@ -1,9 +1,9 @@
 <?xml version="1.0"?>
 <package format="2">
-  <name>gmsl_n_cameras</name>
+  <name>gmsl_logger</name>
   <version>1.0.0</version>
   <description>
-    Wrapper for Nvidia Driveworks
+    Wrapper for Nvidia Driveworks to log video
   </description>
 
   <buildtool_depend>catkin</buildtool_depend>
