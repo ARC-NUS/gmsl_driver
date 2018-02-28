@@ -12,3 +12,5 @@ Update current status: Our multiple camera driver will dramatically drop frames 
 Addition: To improve on the CPU usage, CUDA is used for memory copy into ROS messages.
 
 Note: currently on the px2, the code is at about 30% cpu usage per gmsl, which would only be alright for a couple of cameras.
+
+USES GPUJPEG https://github.com/chongyuelinn-nus/GPUJPEG.git
